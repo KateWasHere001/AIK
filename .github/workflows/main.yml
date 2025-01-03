@@ -1,0 +1,120 @@
+name: Clone Repository
+on:
+  workflow_dispatch:
+  #schedule:
+    # Run at 9:00 AM (UTC+8, Shanghai time) on Monday, which is 01:00 UTC on Monday.
+  #  - cron: '0 1 * * 1'  
+jobs:
+  build:
+    name: Clone Repository by ${{ github.actor }}
+    runs-on: ubuntu-latest
+    permissions: write-all
+    #if: github.event.repository.owner.id == github.event.sender.id
+    env:
+      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_HARDLINK: "true"
+      CCACHE_MAXSIZE: "8G"
+      
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        submodules: "recursive"
+        fetch-depth: 0
+    
+    - name: Set up ccache
+      uses: hendrikmuhs/ccache-action@v1.2
+    
+    - name: change swap size
+      uses: pierotofy/set-swap-space@master
+      with:
+        swap-size-gb: 10
+
+    - name: Write key
+      if: ${{ ( github.event_name != 'pull_request' && startsWith(github.ref, 'refs/heads/') ) || github.ref_type == 'tag' }}
+      run: |
+        if [ ! -z "${{ secrets.KEY_STORE }}" ]; then
+          echo androidStorePassword='${{ secrets.KEY_STORE_PASSWORD }}' >> gradle.properties
+          echo androidKeyAlias='${{ secrets.ALIAS }}' >> gradle.properties
+          echo androidKeyPassword='${{ secrets.KEY_PASSWORD }}' >> gradle.properties
+          echo androidStoreFile='key.jks' >> gradle.properties
+          echo ${{ secrets.KEY_STORE }} | base64 --decode > key.jks
+        fi
+        
+    - name: Setup environment
+      run: |
+        echo "BUILD_TIME=$(TZ=Asia/Shanghai date "+%Y%m%d%H%M")" >> $GITHUB_ENV
+        #sudo apt-get update -y
+        #sudo apt install gcc-aarch64-linux-gnu -y
+        #sudo apt install gcc-arm-linux-gnueabi -y
+        #sudo apt install binutils make python3 libssl-dev build-essential bc bison flex zip unzip libssl-dev ca-certificates xz-utils mkbootimg cpio device-tree-compiler git git-lfs -y
+        mkdir -p $GITHUB_WORKSPACE/kernel_workspace
+        sudo rm -rf /usr/share/dotnet
+        sudo rm -rf /opt/ghc
+        sudo rm -rf "/usr/local/share/boost"
+        sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+        
+        echo "UPLOAD_ARTIFACTS=true" >> $GITHUB_ENV
+        echo "IS_UPDATE=false" >> $GITHUB_ENV
+        
+    - name: Clone original repository
+      env:
+        ZIP_PASS: ${{ secrets.ZIP_PASSWORD }}
+      run: |
+        cd kernel_workspace
+        wget -O AIK-Win32-v3.8.tar.gz https://xdaforums.com/attachments/android-image-kitchen-v3-8-win32-zip.5300919/
+        wget -O AIK-Mobile-v3.8.tar.gz https://xdaforums.com/attachments/update-aik-mobile-installer-v3-8-all-signed-zip.5300921/
+        wget -O AIK-Linux-v3.8.tar.gz https://xdaforums.com/attachments/aik-linux-v3-8-all-tar-gz.5300923/
+
+        if [ ! -z $ZIP_PASS ]; then
+          echo "zip AIK archives"
+          zip -P "$ZIP_PASS" AIK-Win32.zip AIK-Win32-v3.8.tar.gz
+          zip -P "$ZIP_PASS" AIK-Mobile.zip AIK-Mobile-v3.8.tar.gz
+          zip -P "$ZIP_PASS" AIK-Linux.zip AIK-Linux-v3.8.tar.gz
+        else
+          echo "leave AIK archives"
+        fi
+        
+    - name: Set up Git
+      run: |
+          echo "Configure Git User"
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+    - name: Create and Commit File
+      run: |
+        echo ${{ env.BUILD_TIME }} > AIK
+        git add AIK
+        git commit -m "AIK"
+        git tag "AIK"
+
+        git add kernel_workspace/AIK-Win32.zip
+        git add kernel_workspace/AIK-Mobile.zip
+        git add kernel_workspace/AIK-Linux.zip
+        git commit -m "AIK.zip"
+        git tag "AIK.zip_${{ env.BUILD_TIME }}"
+        git push origin --tags
+        git push
+      env:
+        # GitHub 的 Token 认证
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}       
+
+    - name: Generate Release
+      uses: softprops/action-gh-release@v2
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        files: |
+          kernel_workspace/*.zip
+        name: Release_AIK
+        tag_name: Release_AIK
+        body: |
+          Release_AIK
+        
+    - name: Clean up
+      working-directory: kernel_workspace
+      run: |
+        ls -la
+        cd ../
+        rm -rf kernel_workspace
